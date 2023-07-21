@@ -1,5 +1,7 @@
 package com.example.cinema.application;
 
+import com.example.cinema.application.Response.Failure;
+import com.example.cinema.application.Response.Success;
 import com.example.cinema.domain.SeatStatus;
 import com.example.cinema.domain.Show;
 import com.example.cinema.domain.ShowCommand;
@@ -32,6 +34,7 @@ import java.util.function.Predicate;
 
 import static com.example.cinema.domain.ShowCommandError.CANCELLING_CONFIRMED_RESERVATION;
 import static com.example.cinema.domain.ShowCommandError.DUPLICATED_COMMAND;
+import static com.example.cinema.domain.ShowCommandError.RESERVATION_NOT_FOUND;
 import static kalix.javasdk.StatusCode.ErrorCode.BAD_REQUEST;
 import static kalix.javasdk.StatusCode.ErrorCode.NOT_FOUND;
 
@@ -43,7 +46,7 @@ public class ShowEntity extends EventSourcedEntity<Show, ShowEvent> {
   private final Logger logger = LoggerFactory.getLogger(this.getClass());
 
   @PostMapping
-  public Effect<String> create(@PathVariable String id, @RequestBody CreateShow createShow) {
+  public Effect<Response> create(@PathVariable String id, @RequestBody CreateShow createShow) {
     if (currentState() != null) {
       return effects().error("show already exists", BAD_REQUEST);
     } else {
@@ -55,7 +58,7 @@ public class ShowEntity extends EventSourcedEntity<Show, ShowEvent> {
   }
 
   @PatchMapping("/reserve")
-  public Effect<String> reserve(@RequestBody ReserveSeat reserveSeat) {
+  public Effect<Response> reserve(@RequestBody ReserveSeat reserveSeat) {
     if (currentState() == null) {
       return effects().error("show not exists", NOT_FOUND);
     } else {
@@ -67,20 +70,22 @@ public class ShowEntity extends EventSourcedEntity<Show, ShowEvent> {
   }
 
   @PatchMapping("/cancel-reservation/{reservationId}")
-  public Effect<String> cancelReservation(@PathVariable String reservationId) {
+  public Effect<Response> cancelReservation(@PathVariable String reservationId) {
     if (currentState() == null) {
       return effects().error("show not exists", NOT_FOUND);
     } else {
       CancelSeatReservation cancelSeatReservation = new CancelSeatReservation(reservationId);
       return currentState().process(cancelSeatReservation).fold(
-        error -> errorEffect(error, cancelSeatReservation, e -> e == DUPLICATED_COMMAND || e == CANCELLING_CONFIRMED_RESERVATION),
+        error -> errorEffect(error, cancelSeatReservation, e -> e == DUPLICATED_COMMAND
+          || e == CANCELLING_CONFIRMED_RESERVATION
+          || e == RESERVATION_NOT_FOUND),
         showEvent -> persistEffect(showEvent, "reservation cancelled")
       );
     }
   }
 
   @PatchMapping("/confirm-payment/{reservationId}")
-  public Effect<String> confirmPayment(@PathVariable String reservationId) {
+  public Effect<Response> confirmPayment(@PathVariable String reservationId) {
     if (currentState() == null) {
       return effects().error("show not exists", NOT_FOUND);
     } else {
@@ -92,22 +97,22 @@ public class ShowEntity extends EventSourcedEntity<Show, ShowEvent> {
     }
   }
 
-  private Effect<String> persistEffect(ShowEvent showEvent, String message) {
+  private Effect<Response> persistEffect(ShowEvent showEvent, String message) {
     return effects()
       .emitEvent(showEvent)
-      .thenReply(__ -> message);
+      .thenReply(__ -> Success.of(message));
   }
 
-  private Effect<String> errorEffect(ShowCommandError error, ShowCommand showCommand) {
+  private Effect<Response> errorEffect(ShowCommandError error, ShowCommand showCommand) {
     return errorEffect(error, showCommand, e -> e == DUPLICATED_COMMAND);
   }
 
-  private Effect<String> errorEffect(ShowCommandError error, ShowCommand showCommand, Predicate<ShowCommandError> shouldBeSuccessful) {
+  private Effect<Response> errorEffect(ShowCommandError error, ShowCommand showCommand, Predicate<ShowCommandError> shouldBeSuccessful) {
     if (shouldBeSuccessful.test(error)) {
-      return effects().reply("ok");
+      return effects().reply(Success.of("ok"));
     } else {
       logger.error("processing command {} failed with {}", showCommand, error);
-      return effects().error(error.name(), BAD_REQUEST);
+      return effects().reply(Failure.of(error.name()));
     }
   }
 
